@@ -1,0 +1,10 @@
+[package]
+namespace = "Tenemo"
+name = "CombatStats"
+
+[publish]
+repository = "https://thunderstore.io"
+communities = ["valheim"]
+
+[publish.categories]
+valheim = ["mods", "client-side", "server-side", "utility", "deep-north-update", "ai-generated"]
