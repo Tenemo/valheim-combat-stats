@@ -9,4 +9,6 @@ Pets and summons count for their owner. DPS uses the whole fight, ending when th
 
 Change the layout in the settings panel, and the keys and colours in `tenemo.CombatStats.cfg`. The compact meter's offset is its distance inward from the chosen corner. Personal settings and completed fights are stored in `BepInEx/combat-stats-state/`.
 
+It is part of [TenemoPack](https://valheim.hexium.gg/mods/Tenemo/TenemoPack), which installs the mods and settings it was made for through Gale.
+
 Report bugs and ideas on [GitHub](https://github.com/Tenemo/valheim-combat-stats/issues), or message `tenemo` on Discord. Include the mod's version and your `BepInEx/LogOutput.log`.
