@@ -1,6 +1,6 @@
 {
   "name": "CombatStats",
-  "version_number": "1.0.7",
+  "version_number": "1.0.8",
   "website_url": "https://github.com/Tenemo/valheim-combat-stats",
   "description": "Shared fight damage, DPS, pets, damage taken and healing received, with current, last, overall and saved fights. Requires the matching version on server and clients. Based on Muindor CombatStats.",
   "dependencies": ["denikson-BepInExPack_Valheim-5.4.2360", "ValheimModding-Jotunn-2.30.2"]
