@@ -1,3 +1,7 @@
+# 1.0.9
+
+- Fights against minibosses and other renamed bosses show the name their health bar shows instead of the creature they were made from. A long name is shortened with "..." so the fight's status and time stay in sight.
+
 # 1.0.8
 
 - The mod page links the source code and the issue tracker for bug reports.
