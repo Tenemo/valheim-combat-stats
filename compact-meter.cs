@@ -178,9 +178,9 @@ namespace CombatStats.Ui
             _caption.gameObject.SetActive(caption);
             if (caption)
             {
-                _caption.text = shown.Count == 0 ? MeterFormat.EmptyText(snapshot, CombatChannel.DamageDealt) :
-                    MeterFormat.Caption(snapshot, MeterFormat.Plain(Localization.instance.Localize(snapshot.Name)));
                 UiStyle.PlaceTopStretch(_caption.rectTransform, 0f, 0f, 0f, CaptionHeight);
+                _caption.text = shown.Count == 0 ? MeterFormat.EmptyText(snapshot, CombatChannel.DamageDealt) :
+                    UiStyle.FitName(_caption, MeterFormat.Plain(Localization.instance.Localize(snapshot.Name)), name => MeterFormat.Caption(snapshot, name));
                 y += CaptionHeight;
             }
 

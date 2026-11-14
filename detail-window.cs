@@ -206,7 +206,8 @@ namespace CombatStats.Ui
                 ? "Fight " + (Math.Min(_historyIndex, saved - 1) + 1) + " of " + saved + " | "
                 : "";
             _summary.richText = false;
-            _summary.text = snapshot.HasEncounter ? position + MeterFormat.Caption(snapshot, MeterFormat.Plain(Localization.instance.Localize(snapshot.Name))) : "";
+            _summary.text = snapshot.HasEncounter ? UiStyle.FitName(_summary, MeterFormat.Plain(Localization.instance.Localize(snapshot.Name)),
+                name => position + MeterFormat.Caption(snapshot, name)) : "";
             if (snapshot.Rows.Count > 0) _summary.text += "\nTotal " + MeterFormat.Number(snapshot.Total) + " | " +
                 (_channel == CombatChannel.Healing ? "HPS received " : _channel == CombatChannel.DamageTaken ? "Taken/s " : "DPS ") + MeterFormat.Number(snapshot.Dps);
             foreach (var header in _columnHeaders) header.SetActive(snapshot.Rows.Count > 0);

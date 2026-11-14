@@ -56,7 +56,15 @@ namespace CombatStats.Collect
 
         internal static long LocalId() => Player.m_localPlayer ? Player.m_localPlayer.GetPlayerID() : 0L;
         internal static string Key(Character character) => character.GetZDOID().ToString();
-        internal static string Name(Character character) => character is Player player ? player.GetPlayerName() : character.m_name;
+        internal static string Name(Character character)
+        {
+            if (character is Player player) return player.GetPlayerName();
+            if (!character.IsBoss()) return character.m_name;
+            // A boss goes by the name its health bar shows, so a named miniboss isn't called by its base creature's name.
+            // Shared names hold at most 160 characters.
+            string shown = character.GetHoverName();
+            return string.IsNullOrEmpty(shown) ? character.m_name : shown.Length > 160 ? shown.Substring(0, 160) : shown;
+        }
         internal static bool Owns(Character character) => character && character.IsOwner();
 
         private Source Actor(Character actor)

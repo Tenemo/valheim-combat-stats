@@ -441,6 +441,27 @@ namespace CombatStats.Ui
             rect.anchoredPosition = new Vector2(rect.anchoredPosition.x, -top);
         }
 
+        /// <summary>
+        /// A line naming a fight, with the name shortened until the whole line fits the text's width, so a long
+        /// creature name can't push the fight's status and duration out of sight.
+        /// </summary>
+        public static string FitName(TMP_Text text, string name, Func<string, string> line)
+        {
+            string full = line(name);
+            float width = text.rectTransform.rect.width;
+            if (string.IsNullOrEmpty(name) || width <= 0f || text.GetPreferredValues(full).x <= width) return full;
+            int kept = 0, longest = name.Length - 1;
+            while (kept < longest)
+            {
+                int length = (kept + longest + 1) / 2;
+                if (text.GetPreferredValues(line(Shortened(name, length))).x <= width) kept = length;
+                else longest = length - 1;
+            }
+            return line(Shortened(name, kept));
+        }
+
+        private static string Shortened(string name, int length) => name.Substring(0, length).TrimEnd() + "...";
+
         /// <summary>Stretches a rect over its parent with the given margins.</summary>
         public static void Stretch(RectTransform rect, float left, float right, float top, float bottom)
         {
