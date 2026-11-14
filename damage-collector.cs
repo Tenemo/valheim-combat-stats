@@ -60,10 +60,12 @@ namespace CombatStats.Collect
         {
             if (character is Player player) return player.GetPlayerName();
             if (!character.IsBoss()) return character.m_name;
-            // A boss goes by the name its health bar shows, so a named miniboss isn't called by its base creature's name.
-            // Shared names hold at most 160 characters.
+            // A boss goes by the name its health bar shows, so a named miniboss isn't called by its base creature's name. A boss
+            // shown by its plain creature name keeps that name's key, so each viewer reads it in their own language. Shared
+            // names hold at most 160 characters.
             string shown = character.GetHoverName();
-            return string.IsNullOrEmpty(shown) ? character.m_name : shown.Length > 160 ? shown.Substring(0, 160) : shown;
+            if (string.IsNullOrEmpty(shown) || Localization.instance == null || shown == Localization.instance.Localize(character.m_name)) return character.m_name;
+            return shown.Length > 160 ? shown.Substring(0, 160) : shown;
         }
         internal static bool Owns(Character character) => character && character.IsOwner();
 
