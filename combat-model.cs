@@ -63,7 +63,7 @@ namespace CombatStats.Model
         public Dictionary<string, float> Targets = new Dictionary<string, float>();
         public Dictionary<string, float> Skills = new Dictionary<string, float>();
         public Dictionary<string, float> Pets = new Dictionary<string, float>();
-        public float Total => ByKind.Sum();
+        public float Total => DamageKinds.Total(ByKind);
 
         /// <summary>
         /// A tamed creature whose owner is not known gets its own row, with an ID from the hash of
@@ -485,8 +485,11 @@ namespace CombatStats.Stats
         public static EncounterSnapshot From(Encounter fight, CombatChannel channel, double now)
         {
             if (fight == null) return Empty;
+            // Added up in a double, as LINQ's float Sum does.
+            double total = 0d;
+            foreach (Combatant value in fight.Rows(channel).Values) total += value.Total;
             var snapshot = new EncounterSnapshot { HasEncounter = true, Name = fight.Name, Result = fight.Result,
-                Duration = fight.Duration(now), Total = fight.Rows(channel).Values.Sum(x => x.Total) };
+                Duration = fight.Duration(now), Total = (float)total };
             foreach (Combatant value in fight.Rows(channel).Values.Where(x => x.Total > 0f).OrderByDescending(x => x.Total).ThenBy(x => x.Id))
             {
                 snapshot.Rows.Add(new CombatantRow { Id = value.Id, Name = value.Name, Total = value.Total,

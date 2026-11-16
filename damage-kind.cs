@@ -70,6 +70,14 @@ namespace CombatStats.Model
         /// </summary>
         public static string ColorHex(DamageKind kind) => Colors[Index(kind)];
 
+        /// <summary>The amounts added up as LINQ's float Sum does, in a double, without its boxed enumerator.</summary>
+        public static float Total(float[] amounts)
+        {
+            double total = 0d;
+            for (int kind = 0; kind < amounts.Length; kind++) total += amounts[kind];
+            return (float)total;
+        }
+
         private static int Index(DamageKind kind) =>
             kind >= DamageKind.Blunt && kind <= DamageKind.Generic ? (int)kind : throw new ArgumentOutOfRangeException(nameof(kind));
     }

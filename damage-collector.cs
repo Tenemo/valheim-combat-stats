@@ -28,11 +28,6 @@ namespace CombatStats.Collect
             internal float Before, Amount;
             internal int Kind;
         }
-        internal sealed class RpcContext
-        {
-            internal Character Target;
-            internal HitData Hit;
-        }
         private sealed class EffectKinds { internal readonly HashSet<int> Values = new HashSet<int>(); }
 
         /// <summary>An enemy this game owns and reports engagement for, and what it last reported.</summary>
@@ -44,9 +39,14 @@ namespace CombatStats.Collect
             internal double Sent;
         }
         private readonly Dictionary<string, Tracked> tracked = new Dictionary<string, Tracked>();
+        // The tracked enemies of one engagement pass, which can stop tracking them as it goes.
+        private readonly List<KeyValuePair<string, Tracked>> passing = new List<KeyValuePair<string, Tracked>>();
+        private static readonly Dictionary<Skills.SkillType, string> SkillNames = new Dictionary<Skills.SkillType, string>();
         private readonly ConditionalWeakTable<Character, Source> petOwners = new ConditionalWeakTable<Character, Source>();
         private readonly ConditionalWeakTable<StatusEffect, EffectKinds> effectKinds = new ConditionalWeakTable<StatusEffect, EffectKinds>();
-        internal static RpcContext CurrentHit;
+        // The character whose damage message this game is handling, and its hit.
+        internal static Character CurrentTarget;
+        internal static HitData CurrentHit;
         internal static StatusEffect CurrentEffect;
         private static readonly AccessTools.FieldRef<StatusEffect, Character> EffectCharacter = AccessTools.FieldRefAccess<StatusEffect, Character>("m_character");
         private static readonly AccessTools.FieldRef<SE_Burning, float> FireLeft = AccessTools.FieldRefAccess<SE_Burning, float>("m_fireDamageLeft");
@@ -127,7 +127,12 @@ namespace CombatStats.Collect
         private static string SkillOf(HitData hit, Character attacker)
         {
             if (hit == null) return "Other";
-            if (hit.m_skill != Skills.SkillType.None) return hit.m_skill.ToString();
+            if (hit.m_skill != Skills.SkillType.None)
+            {
+                // A skill's name never changes; naming an enum value boxes it and reads its names each time.
+                if (!SkillNames.TryGetValue(hit.m_skill, out string name)) SkillNames[hit.m_skill] = name = hit.m_skill.ToString();
+                return name;
+            }
             return attacker && !attacker.IsPlayer() ? "Creature attack" : "Other";
         }
 
@@ -161,7 +166,7 @@ namespace CombatStats.Collect
             Observation report = Create(target, hit);
             if (report == null) return;
             float[] final = Values(hit);
-            float total = final.Sum();
+            float total = DamageKinds.Total(final);
             if (total <= 0.1f) return;
             float effective = Math.Min(total, Math.Max(0f, state.Health));
             float fraction = effective / total;
@@ -216,11 +221,16 @@ namespace CombatStats.Collect
             foreach (Character target in Character.GetAllCharacters())
             {
                 if (!Owns(target) || target.IsPlayer() || target.IsTamed() || target.IsDead()) continue;
+                // EngagedActor finds no one for an enemy that isn't alerted; skip it before building its key.
+                BaseAI ai = target.GetBaseAI();
+                if (!ai || !ai.IsAlerted()) continue;
                 string key = Key(target);
                 if (!tracked.ContainsKey(key) && EngagedActor(target) != null) Track(key, target);
             }
             double now = FightSync.Now;
-            foreach (var entry in tracked.ToList())
+            passing.Clear();
+            foreach (var entry in tracked) passing.Add(entry);
+            foreach (var entry in passing)
             {
                 Character target = entry.Value.Character;
                 // Gone, owned by another game or tamed: no longer an enemy this game reports.
@@ -237,6 +247,7 @@ namespace CombatStats.Collect
                 Plugin.Sync.Queue(report);
                 if (!report.Engaged) tracked.Remove(entry.Key);
             }
+            passing.Clear();
         }
 
         internal DotState BeforeDot(StatusEffect effect, float amount, int kind)
@@ -251,7 +262,7 @@ namespace CombatStats.Collect
         {
             Character target = EffectCharacter(effect);
             if (!accepted || !Owns(target)) return;
-            HitData source = CurrentHit != null && CurrentHit.Target == target ? CurrentHit.Hit : null;
+            HitData source = CurrentTarget == target ? CurrentHit : null;
             Observation report = Create(target, source);
             if (report == null) return;
             report.Kind = ObservationKind.DotAdded;
@@ -283,8 +294,10 @@ namespace CombatStats.Collect
         {
             HitData.DamageTypes d = hit.m_damage;
             // Vanilla's total includes nonPlayer damage. It shares the type-less slot, so the wire format keeps eleven kinds.
-            return new[] { d.m_blunt, d.m_slash, d.m_pierce, d.m_chop, d.m_pickaxe, d.m_fire, d.m_frost,
-                d.m_lightning, d.m_poison, d.m_spirit, Math.Max(0f, d.m_damage) + Math.Max(0f, d.m_nonPlayer) }.Select(x => Math.Max(0f, x)).ToArray();
+            var values = new[] { d.m_blunt, d.m_slash, d.m_pierce, d.m_chop, d.m_pickaxe, d.m_fire, d.m_frost,
+                d.m_lightning, d.m_poison, d.m_spirit, Math.Max(0f, d.m_damage) + Math.Max(0f, d.m_nonPlayer) };
+            for (int kind = 0; kind < values.Length; kind++) values[kind] = Math.Max(0f, values[kind]);
+            return values;
         }
     }
 
@@ -297,14 +310,19 @@ namespace CombatStats.Collect
     [HarmonyPatch(typeof(Character), "RPC_Damage")]
     internal static class ObserveContact
     {
-        private static void Prefix(Character __instance, HitData hit, out DamageCollector.RpcContext __state)
+        private static void Prefix(Character __instance, HitData hit, out (Character target, HitData hit) __state)
         {
-            __state = DamageCollector.CurrentHit;
+            __state = (DamageCollector.CurrentTarget, DamageCollector.CurrentHit);
             if (!DamageCollector.Owns(__instance)) return;
-            DamageCollector.CurrentHit = new DamageCollector.RpcContext { Target = __instance, Hit = hit };
+            DamageCollector.CurrentTarget = __instance;
+            DamageCollector.CurrentHit = hit;
             Plugin.Collector.Activity(__instance, hit);
         }
-        private static void Finalizer(DamageCollector.RpcContext __state) => DamageCollector.CurrentHit = __state;
+        private static void Finalizer((Character target, HitData hit) __state)
+        {
+            DamageCollector.CurrentTarget = __state.target;
+            DamageCollector.CurrentHit = __state.hit;
+        }
     }
 
     [HarmonyPatch(typeof(Character), nameof(Character.ApplyDamage))]
@@ -313,9 +331,12 @@ namespace CombatStats.Collect
         [HarmonyPriority(Priority.Last)]
         private static void Prefix(Character __instance, HitData hit, out DamageCollector.DamageState __state)
         {
-            __state = new DamageCollector.DamageState { Valid = DamageCollector.Owns(__instance) && !__instance.IsDead() &&
-                !__instance.IsTeleporting() && !__instance.InCutscene() && !__instance.IsDebugFlying() && !CinematicsManager.IsPlaying(),
-                Health = __instance.GetHealth(), Raw = hit == null ? new float[DamageKinds.Count] : DamageCollector.Values(hit) };
+            bool valid = DamageCollector.Owns(__instance) && !__instance.IsDead() &&
+                !__instance.IsTeleporting() && !__instance.InCutscene() && !__instance.IsDebugFlying() && !CinematicsManager.IsPlaying();
+            // Only a burning or poison tick reports the damage before resistances, as what it consumed.
+            bool periodic = DamageCollector.CurrentEffect is SE_Burning || DamageCollector.CurrentEffect is SE_Poison;
+            __state = new DamageCollector.DamageState { Valid = valid, Health = __instance.GetHealth(),
+                Raw = valid && periodic && hit != null ? DamageCollector.Values(hit) : null };
         }
         private static void Postfix(Character __instance, HitData hit, DamageCollector.DamageState __state) => Plugin.Collector.Applied(__instance, hit, __state);
     }
