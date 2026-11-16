@@ -69,8 +69,14 @@ namespace CombatStats.Stats
             return history;
         }
 
-        /// <summary>Writes the history to its file. Returns what went wrong, or null.</summary>
-        public string Save() => FilePath.Length == 0 ? null : Storage.Write(FilePath, JsonConvert.SerializeObject(Saved));
+        /// <summary>
+        /// Writes the history as it is now to its file, on a worker after the writes queued before it; a failed write is
+        /// passed to <paramref name="failed"/> on that worker.
+        /// </summary>
+        public void Save(Action<string> failed)
+        {
+            if (FilePath.Length > 0) Storage.WriteLater(FilePath, JsonConvert.SerializeObject(Saved), failed);
+        }
 
         // A hand-edited or truncated file can name a list but leave it null.
         private static SavedHistory Repair(SavedHistory saved)

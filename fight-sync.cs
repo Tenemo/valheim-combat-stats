@@ -271,11 +271,10 @@ namespace CombatStats.Net
             historyPath = "";
         }
 
-        private static void SaveHistory()
-        {
-            string problem = Plugin.History.Save();
-            if (problem != null) Plugin.Log.LogWarning(problem);
-        }
+        private static void SaveHistory() => Plugin.History.Save(problem => Plugin.Log.LogWarning(problem));
+
+        // A history write still queued when the game closes is finished first.
+        private void OnApplicationQuit() => Storage.Flush();
 
         internal static string Encode(object value) => JsonConvert.SerializeObject(value, Json);
         private static T Decode<T>(string value) where T : class
