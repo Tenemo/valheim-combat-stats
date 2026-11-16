@@ -1,3 +1,8 @@
+# 1.0.10
+
+- Dying no longer loses the fight that is running, and a fight that ends in a wipe while you wait to respawn now shows as a wipe.
+- Finishing a fight no longer holds a frame while its history is saved, and the meter does less work each frame and each hit.
+
 # 1.0.9
 
 - Fights against minibosses and other renamed bosses show the name their health bar shows instead of the creature they were made from. A long name is shortened with "..." so the fight's status and time stay in sight.
