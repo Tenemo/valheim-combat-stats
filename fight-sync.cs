@@ -82,6 +82,8 @@ namespace CombatStats.Net
         private readonly Dictionary<long, Dictionary<long, long>> published = new Dictionary<long, Dictionary<long, long>>();
         private EncounterRecorder recorder = new EncounterRecorder();
         private string session = "", historyPath = "";
+        // The world and player historyPath was built for.
+        private long historyWorld, historyPlayer;
         private long sequence;
         private double nextSend, nextHello;
         private bool synchronized;
@@ -120,9 +122,14 @@ namespace CombatStats.Net
             if (!ReferenceEquals(bound, rpc)) Bind(rpc, net);
             if (Player.m_localPlayer)
             {
-                string path = Path.Combine(Paths.BepInExRootPath, "combat-stats-state",
-                    "world-" + net.GetWorldUID() + "-player-" + DamageCollector.LocalId() + ".dat");
-                if (path != historyPath) OpenHistory(path);
+                long world = net.GetWorldUID(), player = DamageCollector.LocalId();
+                if (historyPath.Length == 0 || world != historyWorld || player != historyPlayer)
+                {
+                    string path = Path.Combine(Paths.BepInExRootPath, "combat-stats-state", "world-" + world + "-player-" + player + ".dat");
+                    if (path != historyPath) OpenHistory(path);
+                    historyWorld = world;
+                    historyPlayer = player;
+                }
                 if (Clock.Elapsed.TotalSeconds >= nextHello)
                 {
                     nextHello = Clock.Elapsed.TotalSeconds + (synchronized ? 2d : 0.25d);
