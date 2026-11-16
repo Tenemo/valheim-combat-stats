@@ -120,7 +120,9 @@ namespace CombatStats.Net
                 return;
             }
             if (!ReferenceEquals(bound, rpc)) Bind(rpc, net);
-            if (Player.m_localPlayer)
+            // In the frame the game removes the character to respawn it, the character is still there but its id reads 0:
+            // that is no other player, and opening a history for it would lose the fights finished before the new one.
+            if (Player.m_localPlayer && DamageCollector.LocalId() != 0)
             {
                 long world = net.GetWorldUID(), player = DamageCollector.LocalId();
                 if (historyPath.Length == 0 || world != historyWorld || player != historyPlayer)
