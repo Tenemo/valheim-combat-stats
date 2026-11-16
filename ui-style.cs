@@ -314,24 +314,24 @@ namespace CombatStats.Ui
             return button.GetComponentInChildren<TMP_Text>(true);
         }
 
-        /// <summary>Shows whether a tab is the chosen one: a bright label over an underline.</summary>
-        public static void MarkSelected(Button tab, bool selected)
+        /// <summary>The underline that marks a tab built by <see cref="TextButton"/> as the chosen one.</summary>
+        public static Transform SelectedMark(Button tab)
         {
-            LabelOf(tab).color = selected ? Mine : Dim;
-            Transform mark = tab.transform.Find("Selected");
-            if (mark == null)
-            {
-                Image line = Box("Selected", (RectTransform)tab.transform, Mine);
-                line.sprite = Flat();
-                RectTransform rect = line.rectTransform;
-                rect.anchorMin = new Vector2(0f, 0f);
-                rect.anchorMax = new Vector2(1f, 0f);
-                rect.pivot = new Vector2(0.5f, 0f);
-                rect.offsetMin = new Vector2(6f, 0f);
-                rect.offsetMax = new Vector2(-6f, 2f);
-                mark = rect;
-            }
+            Image line = Box("Selected", (RectTransform)tab.transform, Mine);
+            line.sprite = Flat();
+            RectTransform rect = line.rectTransform;
+            rect.anchorMin = new Vector2(0f, 0f);
+            rect.anchorMax = new Vector2(1f, 0f);
+            rect.pivot = new Vector2(0.5f, 0f);
+            rect.offsetMin = new Vector2(6f, 0f);
+            rect.offsetMax = new Vector2(-6f, 2f);
+            return rect;
+        }
 
+        /// <summary>Shows whether a tab is the chosen one: a bright label over an underline.</summary>
+        public static void MarkSelected(TMP_Text label, Transform mark, bool selected)
+        {
+            label.color = selected ? Mine : Dim;
             if (mark.gameObject.activeSelf != selected)
             {
                 mark.gameObject.SetActive(selected);

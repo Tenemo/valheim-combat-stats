@@ -132,11 +132,29 @@ namespace CombatStats.Stats
                 }
                 else if (previous != null) changed = true;
             }
-            Saved.Recent = Saved.Recent.OrderByDescending(x => Saved.Sessions.IndexOf(x.Session)).ThenByDescending(x => x.End)
-                .Where((x, index) => index < EncounterRecorder.CorrectionHistory ||
-                    (x.Session == session && now - x.End <= EncounterRecorder.LateReportSeconds)).ToList();
+            if (!Kept(session, now))
+                Saved.Recent = Saved.Recent.OrderByDescending(x => Saved.Sessions.IndexOf(x.Session)).ThenByDescending(x => x.End)
+                    .Where((x, index) => Keeps(x, index, session, now)).ToList();
             Saved.Sessions.RemoveAll(x => x != session && Saved.Recent.All(fight => fight.Session != x));
             if (changed) Changed?.Invoke();
+        }
+
+        private static bool Keeps(Encounter fight, int index, string session, double now) =>
+            index < EncounterRecorder.CorrectionHistory || (fight.Session == session && now - fight.End <= EncounterRecorder.LateReportSeconds);
+
+        // Whether the recent fights are already in order and all kept, which the sort and filter, being stable, would
+        // leave as they are; most feeds bring no finished fight.
+        private bool Kept(string session, double now)
+        {
+            List<Encounter> recent = Saved.Recent;
+            for (int index = 0; index < recent.Count; index++)
+            {
+                if (!Keeps(recent[index], index, session, now)) return false;
+                if (index == 0) continue;
+                int order = Saved.Sessions.IndexOf(recent[index - 1].Session).CompareTo(Saved.Sessions.IndexOf(recent[index].Session));
+                if (order < 0 || order == 0 && recent[index - 1].End.CompareTo(recent[index].End) < 0) return false;
+            }
+            return true;
         }
 
         private void AddOverall(Encounter fight, float factor)
@@ -160,6 +178,9 @@ namespace CombatStats.Stats
                 ?? Active.OrderByDescending(x => x.Start).FirstOrDefault()
                 ?? Saved.Recent.FirstOrDefault();
         }
+
+        /// <summary>Whether <see cref="Current"/> finds a fight: neither list holds a null one.</summary>
+        public bool HasFight => Active.Count > 0 || Saved.Recent.Count > 0;
 
         public EncounterSnapshot Snapshot(FightView view, CombatChannel channel, long local, int history = 0)
         {

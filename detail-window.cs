@@ -36,9 +36,10 @@ namespace CombatStats.Ui
 
         private readonly List<BreakdownLine> _lines = new List<BreakdownLine>();
 
-        private readonly List<Button> _viewTabs = new List<Button>();
+        // Each tab's label and selection mark, kept when it is built.
+        private readonly List<(TMP_Text label, Transform mark)> _viewTabs = new List<(TMP_Text label, Transform mark)>();
 
-        private readonly List<Button> _channelTabs = new List<Button>();
+        private readonly List<(TMP_Text label, Transform mark)> _channelTabs = new List<(TMP_Text label, Transform mark)>();
         private readonly List<GameObject> _columnHeaders = new List<GameObject>();
 
         private readonly HashSet<long> _expanded = new HashSet<long>();
@@ -56,6 +57,8 @@ namespace CombatStats.Ui
         private TMP_Text _rateHeading;
 
         private Button _breakdownButton;
+
+        private TMP_Text _breakdownLabel;
 
         private FightView _view;
 
@@ -186,13 +189,13 @@ namespace CombatStats.Ui
             }
 
             for (int index = 0; index < _viewTabs.Count; index++)
-                UiStyle.MarkSelected(_viewTabs[index], Views[index] == _view);
+                UiStyle.MarkSelected(_viewTabs[index].label, _viewTabs[index].mark, Views[index] == _view);
             for (int index = 0; index < _channelTabs.Count; index++)
-                UiStyle.MarkSelected(_channelTabs[index], CombatChannels.All[index] == _channel);
+                UiStyle.MarkSelected(_channelTabs[index].label, _channelTabs[index].mark, CombatChannels.All[index] == _channel);
             _rateHeading.text = _channel == CombatChannel.Healing ? "HPS" : _channel == CombatChannel.DamageTaken ? "Taken/s" : "DPS";
             // Healing has no target, skill or pet: it is only ever the healed player's own.
             _breakdownButton.gameObject.SetActive(_channel != CombatChannel.Healing);
-            UiStyle.LabelOf(_breakdownButton).text = Label(_breakdown, _channel);
+            _breakdownLabel.text = Label(_breakdown, _channel);
             Layout();
         }
 
@@ -415,7 +418,7 @@ namespace CombatStats.Ui
                 Button tab = UiStyle.TextButton("View" + view, _panel, view.ToString(), UiStyle.BodySize, UiStyle.Dim, () =>
                 { _view = captured; _scrolled = 0f; Refresh(); });
                 UiStyle.PlaceTopLeft((RectTransform)tab.transform, x, 42f, 72f, 22f);
-                x += 74f; _viewTabs.Add(tab);
+                x += 74f; _viewTabs.Add((UiStyle.LabelOf(tab), UiStyle.SelectedMark(tab)));
             }
             Button earlier = UiStyle.TextButton("Earlier", _panel, "Earlier", UiStyle.SmallSize, UiStyle.Dim, () =>
             { _view = FightView.History; _historyIndex = Math.Min(Plugin.History.HistoryCount - 1, _historyIndex + 1); _scrolled = 0f; Refresh(); });
@@ -447,11 +450,12 @@ namespace CombatStats.Ui
 
                 UiStyle.PlaceTopLeft((RectTransform)tab.transform, x, 70f, 130f, 22f);
                 x += 132f;
-                _channelTabs.Add(tab);
+                _channelTabs.Add((UiStyle.LabelOf(tab), UiStyle.SelectedMark(tab)));
             }
             _breakdownButton = UiStyle.TextButton("Breakdown", _panel, "Types", UiStyle.SmallSize, UiStyle.Dim, () =>
             { _breakdown = (Breakdown)(((int)_breakdown + 1) % 4); _scrolled = 0f; Refresh(); });
             UiStyle.PlaceTopLeft((RectTransform)_breakdownButton.transform, x + 10f, 70f, 100f, 22f);
+            _breakdownLabel = UiStyle.LabelOf(_breakdownButton);
         }
 
         private void OpenSettings()

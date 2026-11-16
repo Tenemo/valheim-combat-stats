@@ -121,7 +121,7 @@ namespace CombatStats.Ui
             }
 
             // Auto: the running fight, or else the latest saved one.
-            return Plugin.History.Current(DamageCollector.LocalId()) != null;
+            return Plugin.History.HasFight;
         }
 
         private void Fade(bool wanted)

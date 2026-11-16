@@ -26,6 +26,8 @@ namespace CombatStats.Ui
 
         private const float RowGap = 4f;
 
+        private static readonly string DimHex = ColorUtility.ToHtmlStringRGB(UiStyle.Dim);
+
         private readonly TMP_Text _name;
 
         private readonly TMP_Text _value;
@@ -106,7 +108,7 @@ namespace CombatStats.Ui
             else
             {
                 _value.text = showShare
-                    ? total + "  " + MeterFormat.Number(row.Dps) + "/s  <color=#" + ColorUtility.ToHtmlStringRGB(UiStyle.Dim) + ">" + MeterFormat.Percent(row.Share) + "</color>"
+                    ? total + "  " + MeterFormat.Number(row.Dps) + "/s  <color=#" + DimHex + ">" + MeterFormat.Percent(row.Share) + "</color>"
                     : total + "  " + MeterFormat.Number(row.Dps) + "/s";
             }
 

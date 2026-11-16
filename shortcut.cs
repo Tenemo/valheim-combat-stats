@@ -12,7 +12,7 @@ namespace CombatStats
         /// <summary>The shortcut went down this frame and no text field has the keyboard.</summary>
         public static bool IsPressed(KeyboardShortcut shortcut)
         {
-            return !IsTyping() && WentDown(shortcut);
+            return WentDown(shortcut) && !IsTyping();
         }
 
         /// <summary>True while anything the player types into has the keyboard.</summary>
