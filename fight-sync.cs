@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using BepInEx;
 using CombatStats.Collect;
 using CombatStats.Model;
@@ -68,6 +70,10 @@ namespace CombatStats.Net
         private static readonly Func<ZRoutedRpc, long> ServerPeerOf = AccessTools.MethodDelegate<Func<ZRoutedRpc, long>>(
             AccessTools.Method(typeof(ZRoutedRpc), "GetServerPeerID"));
         private static readonly JsonSerializerSettings Json = new JsonSerializerSettings { MaxDepth = 20 };
+        // The serializer and text buffer JsonConvert would build for every message, kept; only the main thread encodes and
+        // decodes. JsonConvert checks for text after the value when reading, so this one does too.
+        private static readonly JsonSerializer Serializer = ReadingSerializer();
+        private static readonly StringWriter Text = new StringWriter(new StringBuilder(256), CultureInfo.InvariantCulture);
         private static double offset;
         private ZRoutedRpc bound;
         private readonly List<Observation> pending = new List<Observation>();
@@ -276,11 +282,34 @@ namespace CombatStats.Net
         // A history write still queued when the game closes is finished first.
         private void OnApplicationQuit() => Storage.Flush();
 
-        internal static string Encode(object value) => JsonConvert.SerializeObject(value, Json);
+        private static JsonSerializer ReadingSerializer()
+        {
+            var serializer = JsonSerializer.Create(Json);
+            serializer.CheckAdditionalContent = true;
+            return serializer;
+        }
+
+        internal static string Encode(object value)
+        {
+            // JsonConvert would also apply settings another mod made the default.
+            if (JsonConvert.DefaultSettings != null) return JsonConvert.SerializeObject(value, Json);
+            Text.GetStringBuilder().Clear();
+            using (var writer = new JsonTextWriter(Text) { CloseOutput = false })
+            {
+                writer.Formatting = Serializer.Formatting;
+                Serializer.Serialize(writer, value);
+            }
+            return Text.ToString();
+        }
+
         private static T Decode<T>(string value) where T : class
         {
             if (value == null || value.Length > 1024 * 1024) return null;
-            try { return JsonConvert.DeserializeObject<T>(value, Json); }
+            try
+            {
+                if (JsonConvert.DefaultSettings != null) return JsonConvert.DeserializeObject<T>(value, Json);
+                using (var reader = new JsonTextReader(new StringReader(value))) return (T)Serializer.Deserialize(reader, typeof(T));
+            }
             catch (JsonException error) { Plugin.Log.LogWarning("Invalid combat packet: " + error.Message); return null; }
         }
     }
