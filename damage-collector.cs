@@ -86,7 +86,7 @@ namespace CombatStats.Collect
             // A stay command clears the follow name. Keep the last handler until a different one is named.
             if (petOwners.TryGetValue(actor, out Source known))
             {
-                if (saved.Length == 0) return known;
+                if (saved.Length == 0 || saved == known.Name) return known;
                 petOwners.Remove(actor);
             }
             Source resolved = Plugin.Sync.FindPlayer(saved);
