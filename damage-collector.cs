@@ -73,9 +73,9 @@ namespace CombatStats.Collect
             GameObject following = ai ? ai.GetFollowTarget() : null;
             var owner = following ? following.GetComponent<Player>() : null;
             var view = actor.GetComponent<ZNetView>();
-            string saved = view && view.IsValid() ? view.GetZDO().GetString("follow", "") : "";
-            // After ownership transfers the old AI can still have its local follow target.
-            if (owner && (actor.IsOwner() || saved.Length == 0 || saved == owner.GetPlayerName()))
+            string saved = view && view.IsValid() ? view.GetZDO().GetString(ZDOVars.s_follow) : "";
+            // After a handoff the old AI can still point at its previous player. Only a named follow confirms that target on a replica.
+            if (owner && (actor.IsOwner() || (saved.Length > 0 && saved == owner.GetPlayerName())))
             {
                 var source = new Source { Id = owner.GetPlayerID(), Name = owner.GetPlayerName(), Pet = Name(actor) };
                 petOwners.Remove(actor);
