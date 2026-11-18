@@ -1,3 +1,7 @@
+# 1.0.12
+
+- A tame's damage stays with the player it follows after another player's game takes it over, instead of going to the player it followed before.
+
 # 1.0.11
 
 - The compact meter shows by default: the running fight, then the latest one. A choice made with F10 or in the settings panel still applies. The settings file is written on first launch, with the keys and colours to change.
