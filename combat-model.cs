@@ -147,17 +147,31 @@ namespace CombatStats.Stats
             public long Actor;
             public string Name = "", Pet = "";
             public float Remaining;
+            // Its part of the last tick.
+            public float Part;
         }
-        private readonly Dictionary<string, List<Share>> pools = new Dictionary<string, List<Share>>();
+        private sealed class Pool
+        {
+            public readonly List<Share> Shares = new List<Share>();
+            // The time of the last report about the effect.
+            public double Reported;
+        }
+        private readonly Dictionary<string, Pool> pools = new Dictionary<string, Pool>();
         private static string Key(string target, int kind) => target + "/" + kind;
+
+        /// <summary>How many effects are being followed.</summary>
+        public int Count => pools.Count;
 
         public void Add(Observation hit)
         {
             string key = Key(hit.Target, hit.DotKind);
-            if (!pools.TryGetValue(key, out List<Share> shares)) pools[key] = shares = new List<Share>();
+            if (!pools.TryGetValue(key, out Pool pool)) pools[key] = pool = new Pool();
+            pool.Reported = Math.Max(pool.Reported, hit.Time);
+            List<Share> shares = pool.Shares;
             if (hit.ReplaceDot || hit.DotBefore <= 0f) shares.Clear();
             else
             {
+                shares.RemoveAll(x => x.Remaining <= 0.001f);
                 float known = shares.Sum(x => x.Remaining);
                 // A transferred or already running effect may include environmental/unobserved damage.
                 if (known > hit.DotBefore && known > 0f)
@@ -174,12 +188,16 @@ namespace CombatStats.Stats
             var credited = new Dictionary<long, Credit>();
             for (int kind = 0; kind < DamageKinds.Count; kind++)
             {
-                if (hit.Amounts[kind] <= 0f || !pools.TryGetValue(Key(hit.Target, kind), out List<Share> shares)) continue;
+                if (hit.Amounts[kind] <= 0f || !pools.TryGetValue(Key(hit.Target, kind), out Pool pool)) continue;
+                pool.Reported = Math.Max(pool.Reported, hit.Time);
+                List<Share> shares = pool.Shares;
                 float remaining = shares.Sum(x => x.Remaining);
-                if (remaining <= 0f) continue;
+                // The game can tick a poison once more after its pool is used up. That tick is divided as the one before it was.
+                bool spent = remaining <= 0.001f;
+                if (spent && shares.Sum(x => x.Part) <= 0f) continue;
                 foreach (Share share in shares)
                 {
-                    float fraction = share.Remaining / remaining;
+                    float fraction = spent ? share.Part : share.Remaining / remaining;
                     if (share.Actor != 0)
                     {
                         if (!credited.TryGetValue(share.Actor, out var item))
@@ -188,11 +206,22 @@ namespace CombatStats.Stats
                         item.Amounts[kind] += damage;
                         if (share.Pet.Length > 0) Combatant.AddTo(item.Pets, share.Pet, damage);
                     }
+                    share.Part = fraction;
                     share.Remaining = Math.Max(0f, share.Remaining - hit.Consumed[kind] * fraction);
                 }
-                if (shares.All(x => x.Remaining <= 0.001f)) pools.Remove(Key(hit.Target, kind));
             }
             return credited;
+        }
+
+        /// <summary>
+        /// Forgets the effects nothing has reported on for twice as long as a late report can take: those that ran out, and
+        /// those of creatures that left without dying.
+        /// </summary>
+        public void Expire(double now)
+        {
+            if (pools.Count == 0) return;
+            foreach (string key in pools.Where(x => now - x.Value.Reported > 2d * EncounterRecorder.LateReportSeconds).Select(x => x.Key).ToList())
+                pools.Remove(key);
         }
 
         public void Clear(string target, int kind) => pools.Remove(Key(target, kind));
@@ -238,6 +267,9 @@ namespace CombatStats.Stats
         private long nextId;
         public readonly List<Encounter> Fights = new List<Encounter>();
         public readonly Dictionary<long, long> Redirects = new Dictionary<long, long>();
+
+        /// <summary>How many damage-over-time effects are being followed.</summary>
+        public int TrackedEffects => dots.Count;
 
         public int Receive(long peer, IEnumerable<Observation> batch, double now)
         {
@@ -309,6 +341,8 @@ namespace CombatStats.Stats
             }
             bool create = contact && (hit.Actor != 0 || (hit.Victim != 0 && hit.Enemy.Length > 0) || (credits != null && credits.Count > 0));
             Encounter fight = Find(hit, create);
+            // Whether or not it died in a fight: a creature burning beside a campfire is reported too.
+            if (hit.Kind == ObservationKind.Death) dots.ClearTarget(hit.Target);
             if (fight == null) return;
             fight.Revision++;
             if (hit.Kind == ObservationKind.Healing)
@@ -367,10 +401,6 @@ namespace CombatStats.Stats
                         foreach (var pet in credit.Value.Pets) Combatant.AddTo(row.Pets, pet.Key, pet.Value);
                     }
                 }
-            }
-            if (hit.Kind == ObservationKind.Death && hit.Victim == 0)
-            {
-                dots.ClearTarget(hit.Target);
             }
         }
 
@@ -464,6 +494,7 @@ namespace CombatStats.Stats
                 { enemies.Remove(target); dots.ClearTarget(target); }
             }
             foreach (long id in Redirects.Where(x => Fights.All(f => f.Id != x.Value)).Select(x => x.Key).ToList()) Redirects.Remove(id);
+            dots.Expire(now);
         }
 
         private static void Finish(Encounter fight, double end, string result)
