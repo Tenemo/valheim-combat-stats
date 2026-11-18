@@ -79,6 +79,8 @@ namespace CombatStats.Net
         private readonly Dictionary<long, PlayerIdentity> players = new Dictionary<long, PlayerIdentity>();
         private List<KnownPlayer> known = new List<KnownPlayer>();
         private readonly Dictionary<long, Dictionary<long, long>> published = new Dictionary<long, Dictionary<long, long>>();
+        // What each player's last feed said when it carried no fight.
+        private readonly Dictionary<long, string> quiet = new Dictionary<long, string>();
         private EncounterRecorder recorder = new EncounterRecorder();
         private ReportOwnership ownership = new ReportOwnership();
         private readonly Dictionary<long, Queue<(Observation hit, double received)>> incoming =
@@ -166,7 +168,7 @@ namespace CombatStats.Net
                 recorder.Tick(Now);
                 Publish(net);
             }
-            else if (synchronized) Plugin.History.Now = Now;
+            if (synchronized) Plugin.History.Now = Now;
         }
 
         private void Bind(ZRoutedRpc rpc, ZNet net)
@@ -186,7 +188,7 @@ namespace CombatStats.Net
             ownership = new ReportOwnership();
             incoming.Clear(); characterTypes.Clear();
             avatar = null;
-            pending.Clear(); players.Clear(); known.Clear(); published.Clear(); sequence = 0;
+            pending.Clear(); players.Clear(); known.Clear(); published.Clear(); quiet.Clear(); sequence = 0;
             bound = null; synchronized = false; nextHello = 0d; nextSend = 0d;
             Plugin.Collector?.Clear();
             DetailWindow.Instance?.Close();
@@ -242,7 +244,13 @@ namespace CombatStats.Net
         private void Flush(ZNet net)
         {
             if (pending.Count == 0) return;
-            if (!net.IsServer() && !synchronized) return;
+            if (!net.IsServer() && !synchronized)
+            {
+                // The server refuses reports this old, so they cannot pile up while it does not answer.
+                double oldest = Now - EncounterRecorder.LateReportSeconds;
+                pending.RemoveAll(x => x.Time < oldest);
+                return;
+            }
             while (pending.Count > 0)
             {
                 var batch = new CombatBatch { Session = session, Events = pending.Take(128).ToList() };
@@ -340,24 +348,28 @@ namespace CombatStats.Net
         {
             var connected = new HashSet<long>(net.GetPeers().Select(x => x.m_uid)) { ZNet.GetUID() };
             foreach (long departed in players.Keys.Where(x => !connected.Contains(x)).ToList())
-            { players.Remove(departed); published.Remove(departed); incoming.Remove(departed); recorder.ForgetPeer(departed); }
+            { players.Remove(departed); published.Remove(departed); quiet.Remove(departed); incoming.Remove(departed); recorder.ForgetPeer(departed); }
             known = players.Values.Select(x => new KnownPlayer { Id = x.Id, Name = x.Name, Character = x.Character }).ToList();
-            const float reach = EncounterRecorder.Radius * EncounterRecorder.Radius;
+            // What a feed without fights still tells a player: who is connected and which fights merged into others.
+            string standing = string.Join("|", known.Select(x => x.Id + ":" + x.Character + ":" + x.Name)) + "\n" +
+                string.Join("|", recorder.Redirects.Select(x => x.Key + ">" + x.Value));
             foreach (var pair in players.ToList())
             {
                 PlayerIdentity player = pair.Value;
                 if (!published.TryGetValue(pair.Key, out var revisions)) published[pair.Key] = revisions = new Dictionary<long, long>();
+                foreach (long id in revisions.Keys.Where(x => recorder.Fights.All(f => f.Id != x)).ToList()) revisions.Remove(id);
                 // Finished fights are immutable except for late corrections. Do not resend the
                 // whole history four times a second to every connected player.
-                var feed = new CombatFeed { Session = session, Time = Now, Redirects = recorder.Redirects,
-                    Players = known, Fights = recorder.Fights.Where(x =>
-                        (x.Participants.ContainsKey(player.Id) || revisions.ContainsKey(x.Id) || (x.Active && EncounterRecorder.Distance(x.X, x.Y, x.Z, player.X, player.Y, player.Z) <= reach)) &&
-                        (x.Active || !revisions.TryGetValue(x.Id, out long revision) || revision != x.Revision)).ToList() };
+                List<Encounter> due = recorder.Due(player.Id, player.X, player.Y, player.Z, revisions);
+                // A feed without fights ends the player's running ones. Once sent, it is repeated only when it says something new.
+                if (due.Count > 0) quiet.Remove(pair.Key);
+                else if (quiet.TryGetValue(pair.Key, out string said) && said == standing) continue;
+                else quiet[pair.Key] = standing;
+                var feed = new CombatFeed { Session = session, Time = Now, Redirects = recorder.Redirects, Players = known, Fights = due };
                 string data = Encode(feed);
                 if (pair.Key == ZNet.GetUID()) AcceptFeed(Decode<CombatFeed>(data));
                 else net.GetPeer(pair.Key)?.m_rpc.Invoke(FeedRpc, data);
-                foreach (Encounter fight in feed.Fights) revisions[fight.Id] = fight.Revision;
-                foreach (long id in revisions.Keys.Where(x => recorder.Fights.All(f => f.Id != x)).ToList()) revisions.Remove(id);
+                foreach (Encounter fight in due) revisions[fight.Id] = fight.Revision;
             }
         }
 
@@ -420,7 +432,8 @@ namespace CombatStats.Net
 
         private static T Decode<T>(string value) where T : class
         {
-            if (value == null || value.Length > 1024 * 1024) return null;
+            if (value == null) return null;
+            if (value.Length > 1024 * 1024) { Plugin.Log.LogWarning("Ignored a combat packet of " + value.Length + " characters."); return null; }
             try
             {
                 if (JsonConvert.DefaultSettings != null) return JsonConvert.DeserializeObject<T>(value, Json);

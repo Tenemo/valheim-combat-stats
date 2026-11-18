@@ -268,8 +268,32 @@ namespace CombatStats.Stats
         public readonly List<Encounter> Fights = new List<Encounter>();
         public readonly Dictionary<long, long> Redirects = new Dictionary<long, long>();
 
+        /// <summary>
+        /// The most finished fights one feed carries, so the fights a rejoining player is owed arrive over a few feeds
+        /// instead of in one large message.
+        /// </summary>
+        public const int FinishedPerFeed = 4;
+
         /// <summary>How many damage-over-time effects are being followed.</summary>
         public int TrackedEffects => dots.Count;
+
+        /// <summary>
+        /// The fights a player's next feed carries: the running ones they are in, stand near or were sent before, and the
+        /// oldest finished ones that changed since the revisions in <paramref name="sent"/>.
+        /// </summary>
+        public List<Encounter> Due(long player, float x, float y, float z, Dictionary<long, long> sent)
+        {
+            var due = new List<Encounter>();
+            int finished = 0;
+            foreach (Encounter fight in Fights)
+            {
+                bool known = sent.TryGetValue(fight.Id, out long revision);
+                if (!known && !fight.Participants.ContainsKey(player) &&
+                    !(fight.Active && Distance(fight.X, fight.Y, fight.Z, x, y, z) <= Radius * Radius)) continue;
+                if (fight.Active || ((!known || revision != fight.Revision) && finished++ < FinishedPerFeed)) due.Add(fight);
+            }
+            return due;
+        }
 
         public int Receive(long peer, IEnumerable<Observation> batch, double now)
         {
