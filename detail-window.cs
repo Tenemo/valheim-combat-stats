@@ -203,11 +203,11 @@ namespace CombatStats.Ui
         private void Layout()
         {
             long local = DamageCollector.LocalId();
-            EncounterSnapshot snapshot = Plugin.History.Snapshot(_view, _channel, local, _historyIndex);
             int saved = Plugin.History.HistoryCount;
-            string position = _view == FightView.History && saved > 0
-                ? "Fight " + (Math.Min(_historyIndex, saved - 1) + 1) + " of " + saved + " | "
-                : "";
+            // Earlier and Later step it; the saved fights it counts can also be reset or merged away.
+            _historyIndex = Mathf.Clamp(_historyIndex, 0, Math.Max(0, saved - 1));
+            EncounterSnapshot snapshot = Plugin.History.Snapshot(_view, _channel, local, _historyIndex);
+            string position = _view == FightView.History && saved > 0 ? "Fight " + (_historyIndex + 1) + " of " + saved + " | " : "";
             _summary.richText = false;
             _summary.text = snapshot.HasEncounter ? UiStyle.FitName(_summary, MeterFormat.Plain(Localization.instance.Localize(snapshot.Name)),
                 name => position + MeterFormat.Caption(snapshot, name)) : "";
@@ -421,10 +421,10 @@ namespace CombatStats.Ui
                 x += 74f; _viewTabs.Add((UiStyle.LabelOf(tab), UiStyle.SelectedMark(tab)));
             }
             Button earlier = UiStyle.TextButton("Earlier", _panel, "Earlier", UiStyle.SmallSize, UiStyle.Dim, () =>
-            { _view = FightView.History; _historyIndex = Math.Min(Plugin.History.HistoryCount - 1, _historyIndex + 1); _scrolled = 0f; Refresh(); });
+            { _view = FightView.History; _historyIndex++; _scrolled = 0f; Refresh(); });
             UiStyle.PlaceTopLeft((RectTransform)earlier.transform, x + 8f, 42f, 65f, 22f);
             Button later = UiStyle.TextButton("Later", _panel, "Later", UiStyle.SmallSize, UiStyle.Dim, () =>
-            { _view = FightView.History; _historyIndex = Math.Max(0, _historyIndex - 1); _scrolled = 0f; Refresh(); });
+            { _view = FightView.History; _historyIndex--; _scrolled = 0f; Refresh(); });
             UiStyle.PlaceTopLeft((RectTransform)later.transform, x + 76f, 42f, 65f, 22f);
             Button reset = UiStyle.TextButton("Reset", _panel, "Reset", UiStyle.SmallSize, UiStyle.Dim, () =>
             {
