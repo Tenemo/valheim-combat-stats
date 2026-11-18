@@ -29,7 +29,8 @@ namespace CombatStats
         private void Awake()
         {
             Log = Logger;
-            Settings = new ModConfig(Config);
+            bool headless = SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null;
+            Settings = new ModConfig(Config, headless);
             Collector = new DamageCollector();
             harmony = new Harmony(Id);
             try
@@ -44,7 +45,6 @@ namespace CombatStats
             }
 
             Sync = gameObject.AddComponent<FightSync>();
-            bool headless = SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null;
             if (!headless)
             {
                 gameObject.AddComponent<CompactMeter>();

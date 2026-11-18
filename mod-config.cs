@@ -24,13 +24,13 @@ namespace CombatStats
         private readonly string path;
         private bool writable = true;
 
-        public ModConfig(ConfigFile config)
+        public ModConfig(ConfigFile config, bool headless)
         {
             this.config = config;
             config.SaveOnConfigSet = false;
             CompactKey = config.Bind("Compact", "CompactKey", new KeyboardShortcut(KeyCode.F10), "Cycle compact meter visibility.");
             DetailKey = config.Bind("Detail", "DetailKey", new KeyboardShortcut(KeyCode.F11), "Open fight details.");
-            CompactMode = config.Bind("Compact", "CompactMode", MeterMode.Off, "Auto shows the running or latest fight; Always also shows an empty meter; Off hides it.");
+            CompactMode = config.Bind("Compact", "CompactMode", MeterMode.Auto, "Auto shows the running or latest fight; Always also shows an empty meter; Off hides it.");
             CompactRows = config.Bind("Compact", "CompactRows", 5, new ConfigDescription("Visible rows, including your own.", new AcceptableValueRange<int>(1, 12)));
             CompactAnchor = config.Bind("Compact", "CompactAnchor", ScreenAnchor.TopRight, "Screen corner or edge.");
             CompactOffset = config.Bind("Compact", "CompactOffset", new Vector2(28f, 164f), "Distance in pixels from the chosen corner towards the middle of the screen; middle edges centre the meter vertically.");
@@ -44,6 +44,14 @@ namespace CombatStats
             DetailSize = config.Bind("Detail", "DetailSize", new Vector2(700f, 480f), "Width and height in pixels.");
             Colors = config.Bind("Colours", "Colors", "", "Damage-type overrides, such as Fire=#ff7733.");
             IsDebug = config.Bind("General", "IsDebug", false, "Enable diagnostic logging.");
+            // Changes are kept in the personal file below, so nothing else writes this one. A player's game gets it once,
+            // with the defaults, as the place to set keys and colours; a server has nothing to set there.
+            if (!headless && !File.Exists(config.ConfigFilePath))
+            {
+                try { config.Save(); }
+                catch (Exception error) when (error is IOException || error is UnauthorizedAccessException)
+                { Plugin.Log.LogWarning("Could not write " + config.ConfigFilePath + ": " + error.Message); }
+            }
             path = Path.Combine(Paths.BepInExRootPath, "combat-stats-state", "settings.dat");
             LoadPersonal();
             config.SettingChanged += (_, change) =>
