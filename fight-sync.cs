@@ -67,8 +67,7 @@ namespace CombatStats.Net
         private const string EventsRpc = "Tenemo.CombatStats.Events.1";
         private const string FeedRpc = "Tenemo.CombatStats.Feed.1";
         private static readonly Stopwatch Clock = Stopwatch.StartNew();
-        private static readonly Func<ZRoutedRpc, long> ServerPeerOf = AccessTools.MethodDelegate<Func<ZRoutedRpc, long>>(
-            AccessTools.Method(typeof(ZRoutedRpc), "GetServerPeerID"));
+        private static readonly List<long> NetworkUsers = AccessTools.StaticFieldRefAccess<List<long>>(typeof(ZDOID), "m_userIDs");
         private static readonly JsonSerializerSettings Json = new JsonSerializerSettings { MaxDepth = 20 };
         // The serializer and text buffer JsonConvert would build for every message, kept; only the main thread encodes and
         // decodes. JsonConvert checks for text after the value when reading, so this one does too.
@@ -81,9 +80,14 @@ namespace CombatStats.Net
         private List<KnownPlayer> known = new List<KnownPlayer>();
         private readonly Dictionary<long, Dictionary<long, long>> published = new Dictionary<long, Dictionary<long, long>>();
         private EncounterRecorder recorder = new EncounterRecorder();
+        private ReportOwnership ownership = new ReportOwnership();
+        private readonly Dictionary<long, Queue<(Observation hit, double received)>> incoming =
+            new Dictionary<long, Queue<(Observation, double)>>();
+        private readonly Dictionary<int, Type> characterTypes = new Dictionary<int, Type>();
         private string session = "", historyPath = "";
         // The world and player historyPath was built for.
         private long historyWorld, historyPlayer;
+        private Player avatar;
         private long sequence;
         private double nextSend, nextHello;
         private bool synchronized;
@@ -132,26 +136,35 @@ namespace CombatStats.Net
                     historyWorld = world;
                     historyPlayer = player;
                 }
+                Player local = Player.m_localPlayer;
+                if (avatar != local && !local.IsDead())
+                {
+                    avatar = local;
+                    nextHello = 0d;
+                    Queue(new Observation { Kind = ObservationKind.Spawn, Time = Now, Victim = player, Target = DamageCollector.Key(local) });
+                }
                 if (Clock.Elapsed.TotalSeconds >= nextHello)
                 {
                     nextHello = Clock.Elapsed.TotalSeconds + (synchronized ? 2d : 0.25d);
-                    Player local = Player.m_localPlayer;
                     Vector3 position = local.transform.position;
                     var identity = new PlayerIdentity { Id = local.GetPlayerID(), Name = local.GetPlayerName(),
                         Character = DamageCollector.Key(local), Sent = Clock.Elapsed.TotalSeconds,
                         X = position.x, Y = position.y, Z = position.z };
                     if (net.IsServer()) players[ZNet.GetUID()] = identity;
-                    else rpc.InvokeRoutedRPC(ServerPeerOf(rpc), HelloRpc, Encode(identity));
+                    else net.GetServerPeer()?.m_rpc.Invoke(HelloRpc, Encode(identity));
                 }
             }
             if (Clock.Elapsed.TotalSeconds < nextSend) return;
             nextSend = Clock.Elapsed.TotalSeconds + 0.25d;
             Plugin.Collector.Engagement();
-            Flush(net, rpc);
+            Flush(net);
             if (net.IsServer())
             {
+                ownership.Expire(Now);
+                foreach (var pair in incoming)
+                    if (net.GetPeer(pair.Key) != null) CollectAuthorized(pair.Key, pair.Value);
                 recorder.Tick(Now);
-                Publish(net, rpc);
+                Publish(net);
             }
             else if (synchronized) Plugin.History.Now = Now;
         }
@@ -163,37 +176,56 @@ namespace CombatStats.Net
             session = net.IsServer() ? Guid.NewGuid().ToString("N") : "";
             synchronized = net.IsServer();
             offset = 0d;
-            rpc.Register<string>(HelloRpc, Hello);
-            rpc.Register<string>(ClockRpc, SetClock);
-            rpc.Register<string>(EventsRpc, Events);
-            rpc.Register<string>(FeedRpc, Feed);
-            Plugin.Debug("Fight sync registered for a new world.");
+            Plugin.Debug("Fight sync started for a new world.");
         }
 
         private void EndSession()
         {
             CloseHistory();
             recorder = new EncounterRecorder();
+            ownership = new ReportOwnership();
+            incoming.Clear(); characterTypes.Clear();
+            avatar = null;
             pending.Clear(); players.Clear(); known.Clear(); published.Clear(); sequence = 0;
             bound = null; synchronized = false; nextHello = 0d; nextSend = 0d;
             Plugin.Collector?.Clear();
             DetailWindow.Instance?.Close();
         }
 
-        private void Hello(long sender, string json)
+        // Bind reports and replies to their actual game connection.
+        [HarmonyPatch(typeof(ZNet), "OnNewConnection")]
+        private static class Connection
+        {
+            private static void Postfix(ZNet __instance, ZNetPeer __0)
+            {
+                var peer = __0;
+                if (__instance.IsServer())
+                {
+                    peer.m_rpc.Register<string>(HelloRpc, (rpc, json) => { if (peer.IsReady()) Plugin.Sync.Hello(peer, json); });
+                    peer.m_rpc.Register<string>(EventsRpc, (rpc, json) => { if (peer.IsReady()) Plugin.Sync.Events(peer.m_uid, json); });
+                }
+                else if (peer.m_server)
+                {
+                    peer.m_rpc.Register<string>(ClockRpc, (rpc, json) => Plugin.Sync.SetClock(json));
+                    peer.m_rpc.Register<string>(FeedRpc, (rpc, json) => Plugin.Sync.Feed(json));
+                }
+            }
+        }
+
+        private void Hello(ZNetPeer peer, string json)
         {
             if (!ZNet.instance.IsServer()) return;
             PlayerIdentity identity = Decode<PlayerIdentity>(json);
-            ZNetPeer peer = ZNet.instance.GetPeer(sender);
-            if (identity == null || peer == null || identity.Id == 0 || identity.Name == null || identity.Name.Length > 160 ||
+            if (identity == null || identity.Id == 0 || identity.Name == null || identity.Name.Length > 160 ||
                 identity.Character != peer.m_characterID.ToString()) return;
-            players[sender] = identity;
-            bound.InvokeRoutedRPC(sender, ClockRpc, Encode(new ClockReply { Session = session, Echo = identity.Sent, Time = Now }));
+            var data = ZDOMan.instance.GetZDO(peer.m_characterID);
+            if (data == null || data.GetLong(ZDOVars.s_playerID) != identity.Id) return;
+            players[peer.m_uid] = identity;
+            peer.m_rpc.Invoke(ClockRpc, Encode(new ClockReply { Session = session, Echo = identity.Sent, Time = Now }));
         }
 
-        private void SetClock(long sender, string json)
+        private void SetClock(string json)
         {
-            if (ZNet.instance.IsServer() || sender != ServerPeerOf(bound)) return;
             ClockReply reply = Decode<ClockReply>(json);
             if (reply == null || string.IsNullOrEmpty(reply.Session)) return;
             double elapsed = Clock.Elapsed.TotalSeconds;
@@ -207,7 +239,7 @@ namespace CombatStats.Net
             synchronized = true;
         }
 
-        private void Flush(ZNet net, ZRoutedRpc rpc)
+        private void Flush(ZNet net)
         {
             if (pending.Count == 0) return;
             if (!net.IsServer() && !synchronized) return;
@@ -216,7 +248,7 @@ namespace CombatStats.Net
                 var batch = new CombatBatch { Session = session, Events = pending.Take(128).ToList() };
                 pending.RemoveRange(0, batch.Events.Count);
                 if (net.IsServer()) recorder.Receive(ZNet.GetUID(), batch.Events, Now);
-                else rpc.InvokeRoutedRPC(ServerPeerOf(rpc), EventsRpc, Encode(batch));
+                else net.GetServerPeer()?.m_rpc.Invoke(EventsRpc, Encode(batch));
             }
         }
 
@@ -226,14 +258,89 @@ namespace CombatStats.Net
             CombatBatch batch = Decode<CombatBatch>(json);
             if (batch == null || batch.Session != session || batch.Events == null ||
                 batch.Events.Count > 128 || batch.Events.Any(x => x == null)) return;
-            recorder.Receive(sender, batch.Events, Now);
+            if (!incoming.TryGetValue(sender, out var queue)) incoming[sender] = queue = new Queue<(Observation, double)>();
+            double now = Now;
+            foreach (var hit in batch.Events)
+                if (queue.Count < 4096 && hit.Valid() && hit.Time >= now - EncounterRecorder.LateReportSeconds && hit.Time <= now + 2d)
+                    queue.Enqueue((hit, now));
+            CollectAuthorized(sender, queue);
         }
 
-        private void Publish(ZNet net, ZRoutedRpc rpc)
+        // A combat message can arrive just before the game's own object replication. Keep the peer's
+        // ordering during that short wait, including a damage-over-time application followed by a tick.
+        private void CollectAuthorized(long sender, Queue<(Observation hit, double received)> queue)
+        {
+            List<Observation> accepted = null;
+            double now = Now;
+            while (queue.Count > 0)
+            {
+                var entry = queue.Peek();
+                var hit = entry.hit;
+                var data = TargetData(hit.Target);
+                long victim = 0;
+                long owner = CharacterVictim(data, out victim) ? data.GetOwner() : 0;
+                if (ownership.Allows(hit.Target, sender, hit.Victim, hit.Time, owner, victim))
+                    (accepted ??= new List<Observation>()).Add(hit);
+                else if (now - entry.received < 2d) break;
+                queue.Dequeue();
+            }
+            if (accepted != null) recorder.Receive(sender, accepted, now);
+        }
+
+        private static ZDO TargetData(string key)
+        {
+            int split = key.IndexOf(':');
+            if (split <= 0 || !long.TryParse(key.Substring(0, split), NumberStyles.Integer, CultureInfo.InvariantCulture, out long user) ||
+                !uint.TryParse(key.Substring(split + 1), NumberStyles.None, CultureInfo.InvariantCulture, out uint id) ||
+                !NetworkUsers.Contains(user)) return null;
+            // Constructing a ZDOID interns its user in the game. Only construct server-known IDs.
+            var target = new ZDOID(user, id);
+            return target.ToString() == key ? ZDOMan.instance.GetZDO(target) : null;
+        }
+
+        private bool CharacterVictim(ZDO data, out long victim)
+        {
+            victim = 0;
+            if (data == null || !ZNetScene.instance) return false;
+            int hash = data.GetPrefab();
+            if (!characterTypes.TryGetValue(hash, out Type type))
+            {
+                var prefab = ZNetScene.instance.GetPrefab(hash);
+                if (!prefab) return false;
+                type = prefab.GetComponent<Character>()?.GetType();
+                characterTypes[hash] = type;
+            }
+            if (type == null) return false;
+            if (!typeof(Player).IsAssignableFrom(type)) return true;
+            victim = data.GetLong(ZDOVars.s_playerID);
+            return victim != 0;
+        }
+
+        private void Retire(ZDO data, long next)
+        {
+            if (!ZNet.instance || !ZNet.instance.IsServer() || data == null) return;
+            long previous = data.GetOwner();
+            if (previous != next && CharacterVictim(data, out long victim))
+                ownership.Relinquished(data.m_uid.ToString(), previous, victim, Now);
+        }
+
+        [HarmonyPatch(typeof(ZDO), "SetOwnerInternal")]
+        private static class Transfer
+        {
+            private static void Prefix(ZDO __instance, long __0) => Plugin.Sync?.Retire(__instance, __0);
+        }
+
+        [HarmonyPatch(typeof(ZDOMan), "HandleDestroyedZDO")]
+        private static class Destruction
+        {
+            private static void Prefix(ZDOMan __instance, ZDOID __0) => Plugin.Sync?.Retire(__instance.GetZDO(__0), 0);
+        }
+
+        private void Publish(ZNet net)
         {
             var connected = new HashSet<long>(net.GetPeers().Select(x => x.m_uid)) { ZNet.GetUID() };
             foreach (long departed in players.Keys.Where(x => !connected.Contains(x)).ToList())
-            { players.Remove(departed); published.Remove(departed); recorder.ForgetPeer(departed); }
+            { players.Remove(departed); published.Remove(departed); incoming.Remove(departed); recorder.ForgetPeer(departed); }
             known = players.Values.Select(x => new KnownPlayer { Id = x.Id, Name = x.Name, Character = x.Character }).ToList();
             const float reach = EncounterRecorder.Radius * EncounterRecorder.Radius;
             foreach (var pair in players.ToList())
@@ -248,15 +355,15 @@ namespace CombatStats.Net
                         (x.Active || !revisions.TryGetValue(x.Id, out long revision) || revision != x.Revision)).ToList() };
                 string data = Encode(feed);
                 if (pair.Key == ZNet.GetUID()) AcceptFeed(Decode<CombatFeed>(data));
-                else rpc.InvokeRoutedRPC(pair.Key, FeedRpc, data);
+                else net.GetPeer(pair.Key)?.m_rpc.Invoke(FeedRpc, data);
                 foreach (Encounter fight in feed.Fights) revisions[fight.Id] = fight.Revision;
                 foreach (long id in revisions.Keys.Where(x => recorder.Fights.All(f => f.Id != x)).ToList()) revisions.Remove(id);
             }
         }
 
-        private void Feed(long sender, string json)
+        private void Feed(string json)
         {
-            if (ZNet.instance.IsServer() || sender != ServerPeerOf(bound) || !synchronized) return;
+            if (!synchronized) return;
             CombatFeed feed = Decode<CombatFeed>(json);
             if (feed == null || feed.Session != session) return;
             AcceptFeed(feed);

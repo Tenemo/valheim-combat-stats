@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Reflection.Emit;
 using CombatStats.Model;
 using CombatStats.Net;
 using CombatStats.Stats;
@@ -16,12 +17,6 @@ namespace CombatStats.Collect
         {
             internal long Id;
             internal string Name = "", Pet = "";
-        }
-        internal sealed class DamageState
-        {
-            internal float Health;
-            internal bool Valid;
-            internal float[] Raw;
         }
         internal sealed class DotState
         {
@@ -77,17 +72,23 @@ namespace CombatStats.Collect
             var ai = actor.GetBaseAI() as MonsterAI;
             GameObject following = ai ? ai.GetFollowTarget() : null;
             var owner = following ? following.GetComponent<Player>() : null;
-            if (owner)
+            var view = actor.GetComponent<ZNetView>();
+            string saved = view && view.IsValid() ? view.GetZDO().GetString("follow", "") : "";
+            // After ownership transfers the old AI can still have its local follow target.
+            if (owner && (actor.IsOwner() || saved.Length == 0 || saved == owner.GetPlayerName()))
             {
                 var source = new Source { Id = owner.GetPlayerID(), Name = owner.GetPlayerName(), Pet = Name(actor) };
                 petOwners.Remove(actor);
                 petOwners.Add(actor, source);
                 return source;
             }
-            if (petOwners.TryGetValue(actor, out Source known)) return known;
             // Vanilla persists a follow name. Resolve it only when it identifies one connected character.
-            var view = actor.GetComponent<ZNetView>();
-            string saved = view && view.IsValid() ? view.GetZDO().GetString("follow", "") : "";
+            // A stay command clears the follow name. Keep the last handler until a different one is named.
+            if (petOwners.TryGetValue(actor, out Source known))
+            {
+                if (saved.Length == 0) return known;
+                petOwners.Remove(actor);
+            }
             Source resolved = Plugin.Sync.FindPlayer(saved);
             if (resolved != null)
             {
@@ -160,23 +161,24 @@ namespace CombatStats.Collect
             if (attacker && !attacker.IsPlayer() && !attacker.IsTamed() && attacker.IsOwner()) Track(Key(attacker), attacker);
         }
 
-        internal void Applied(Character target, HitData hit, DamageState state)
+        internal void Applied(Character target, HitData hit, float healthBefore, float healthAfter, float[] raw)
         {
-            if (!state.Valid || hit == null) return;
+            float lost = healthBefore - healthAfter;
+            if (lost <= 0f) return;
             Observation report = Create(target, hit);
             if (report == null) return;
             float[] final = Values(hit);
             float total = DamageKinds.Total(final);
             if (total <= 0.1f) return;
-            float effective = Math.Min(total, Math.Max(0f, state.Health));
+            float effective = Math.Min(total, lost);
             float fraction = effective / total;
             for (int kind = 0; kind < final.Length; kind++) final[kind] *= fraction;
             report.Kind = ObservationKind.Damage;
             report.Amounts = final;
-            report.Overkill = total - effective;
+            report.Overkill = healthAfter <= 0f ? Math.Max(0f, total - healthBefore) : 0f;
             report.Periodic = CurrentEffect is SE_Burning || CurrentEffect is SE_Poison;
             if (report.Actor == 0 && report.Victim == 0 && !report.Periodic) return;
-            if (report.Periodic) report.Consumed = state.Raw;
+            if (report.Periodic) report.Consumed = raw;
             Plugin.Sync.Queue(report);
         }
 
@@ -328,17 +330,36 @@ namespace CombatStats.Collect
     [HarmonyPatch(typeof(Character), nameof(Character.ApplyDamage))]
     internal static class ObserveDamage
     {
-        [HarmonyPriority(Priority.Last)]
-        private static void Prefix(Character __instance, HitData hit, out DamageCollector.DamageState __state)
+        private static float[] TickDamage(HitData hit) =>
+            DamageCollector.CurrentEffect is SE_Burning || DamageCollector.CurrentEffect is SE_Poison ? DamageCollector.Values(hit) : null;
+
+        // Measure this hit's health write before OnDamaged callbacks can heal or deal a second hit.
+        // Undying can replace SetHealth with a heal, and a shield can skip the write altogether.
+        private static void SetHitHealth(Character target, float health, HitData hit, float[] raw)
         {
-            bool valid = DamageCollector.Owns(__instance) && !__instance.IsDead() &&
-                !__instance.IsTeleporting() && !__instance.InCutscene() && !__instance.IsDebugFlying() && !CinematicsManager.IsPlaying();
-            // Only a burning or poison tick reports the damage before resistances, as what it consumed.
-            bool periodic = DamageCollector.CurrentEffect is SE_Burning || DamageCollector.CurrentEffect is SE_Poison;
-            __state = new DamageCollector.DamageState { Valid = valid, Health = __instance.GetHealth(),
-                Raw = valid && periodic && hit != null ? DamageCollector.Values(hit) : null };
+            float before = target.GetHealth();
+            target.SetHealth(health);
+            Plugin.Collector.Applied(target, hit, before, target.GetHealth(), raw);
         }
-        private static void Postfix(Character __instance, HitData hit, DamageCollector.DamageState __state) => Plugin.Collector.Applied(__instance, hit, __state);
+
+        private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions, ILGenerator generator)
+        {
+            var raw = generator.DeclareLocal(typeof(float[]));
+            yield return new CodeInstruction(OpCodes.Ldarg_1);
+            yield return CodeInstruction.Call(typeof(ObserveDamage), nameof(TickDamage));
+            yield return new CodeInstruction(OpCodes.Stloc, raw);
+            var setHealth = AccessTools.Method(typeof(Character), nameof(Character.SetHealth));
+            int writes = 0;
+            foreach (var instruction in instructions)
+            {
+                if (!instruction.Calls(setHealth)) { yield return instruction; continue; }
+                writes++;
+                yield return new CodeInstruction(OpCodes.Ldarg_1).MoveLabelsFrom(instruction);
+                yield return new CodeInstruction(OpCodes.Ldloc, raw);
+                yield return CodeInstruction.Call(typeof(ObserveDamage), nameof(SetHitHealth));
+            }
+            if (writes != 1) throw new InvalidOperationException("Expected one health write in Character.ApplyDamage.");
+        }
     }
 
     [HarmonyPatch(typeof(Character), nameof(Character.OnDeath))]

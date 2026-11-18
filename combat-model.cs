@@ -11,7 +11,7 @@ namespace CombatStats.Model
     {
         public static readonly CombatChannel[] All = { CombatChannel.DamageDealt, CombatChannel.DamageTaken, CombatChannel.Healing };
     }
-    public enum ObservationKind { Activity, Damage, Engagement, Death, Healing, DotAdded, DotCleared }
+    public enum ObservationKind { Activity, Damage, Engagement, Death, Healing, DotAdded, DotCleared, Spawn }
 
     // Full network object IDs identify enemies. Player IDs identify characters across respawns.
     public sealed class Observation
@@ -110,6 +110,12 @@ namespace CombatStats.Model
         public Dictionary<long, Combatant> Taken = new Dictionary<long, Combatant>();
         public Dictionary<long, Combatant> Healing = new Dictionary<long, Combatant>();
         public Dictionary<long, int> Deaths = new Dictionary<long, int>();
+        // Server-only event times. The displayed duration excludes the disengagement grace.
+        internal readonly Dictionary<long, double> Joined = new Dictionary<long, double>();
+        internal readonly Dictionary<long, double> LastDeath = new Dictionary<long, double>();
+        internal readonly Dictionary<long, double> LastSpawn = new Dictionary<long, double>();
+        internal double ClosedAt;
+        internal string ExitReason;
         public bool Active => Result == "Active";
         public double Duration(double now) => Math.Max(1d, (Active ? now : End) - Start);
 
@@ -219,7 +225,7 @@ namespace CombatStats.Stats
         {
             public long Fight;
             public double Seen;
-            public bool Engaged, Dead;
+            public bool Engaged, Departed, Dead;
         }
         private sealed class SeenReports
         {
@@ -229,7 +235,6 @@ namespace CombatStats.Stats
         private readonly Dictionary<string, Enemy> enemies = new Dictionary<string, Enemy>();
         private readonly Dictionary<long, SeenReports> reports = new Dictionary<long, SeenReports>();
         private readonly DotLedger dots = new DotLedger();
-        private readonly Dictionary<long, double> pendingKills = new Dictionary<long, double>();
         private long nextId;
         public readonly List<Encounter> Fights = new List<Encounter>();
         public readonly Dictionary<long, long> Redirects = new Dictionary<long, long>();
@@ -258,7 +263,10 @@ namespace CombatStats.Stats
             string enemyId = hit.Victim == 0 ? hit.Target : hit.Enemy;
             if (enemies.TryGetValue(enemyId, out Enemy enemy))
                 fight = Fights.FirstOrDefault(x => x.Id == enemy.Fight && (x.Active || hit.Time <= x.End));
-            if (fight == null && hit.Victim == 0 && hit.Kind == ObservationKind.Death) return null;
+            if ((hit.Kind == ObservationKind.Engagement && !hit.Engaged) ||
+                (hit.Kind == ObservationKind.Death && hit.Victim == 0)) return fight;
+            if (hit.Kind == ObservationKind.Healing || (hit.Kind == ObservationKind.Death && hit.Victim != 0))
+                return ParticipantFight(hit);
             var candidates = Fights.Where(x => x.Active &&
                 Distance(x.X, x.Y, x.Z, hit.X, hit.Y, hit.Z) <= Radius * Radius).ToList();
             if (fight == null && hit.Kind == ObservationKind.Engagement)
@@ -267,8 +275,6 @@ namespace CombatStats.Stats
                 candidates = candidates.Where(x => x.Participants.ContainsKey(hit.Actor)).ToList();
                 if (candidates.Count == 0) return null;
             }
-            if ((hit.Kind == ObservationKind.Healing || (hit.Kind == ObservationKind.Death && hit.Victim != 0)))
-                return Fights.FirstOrDefault(x => x.Active && x.Participants.ContainsKey(hit.Victim));
             if (fight == null && candidates.Count > 0) fight = candidates.OrderBy(x => x.Start).First();
             // A report buffered on another owner can precede a death already delivered to us.
             if (fight == null && create)
@@ -291,6 +297,7 @@ namespace CombatStats.Stats
 
         public void Record(Observation hit, double now)
         {
+            if (hit.Kind == ObservationKind.Spawn) { Respawn(hit.Victim, hit.Time); return; }
             if (hit.Kind == ObservationKind.DotAdded) { dots.Add(hit); return; }
             if (hit.Kind == ObservationKind.DotCleared) { dots.Clear(hit.Target, hit.DotKind); return; }
             bool contact = hit.Kind == ObservationKind.Activity || hit.Kind == ObservationKind.Damage;
@@ -306,14 +313,15 @@ namespace CombatStats.Stats
             fight.Revision++;
             if (hit.Kind == ObservationKind.Healing)
             {
-                if (fight.Active && fight.Participants.ContainsKey(hit.Victim))
-                    Encounter.Row(fight.Healing, hit.Victim, hit.ActorName).Add(hit, hit.Amounts);
+                Encounter.Row(fight.Healing, hit.Victim, hit.ActorName).Add(hit, hit.Amounts);
                 return;
             }
             if (hit.Kind == ObservationKind.Death && hit.Victim != 0)
             {
                 if (!fight.Deaths.ContainsKey(hit.Victim)) fight.Deaths[hit.Victim] = 0;
                 fight.Deaths[hit.Victim]++;
+                KeepLatest(fight.LastDeath, hit.Victim, hit.Time);
+                if (!fight.Active && fight.ExitReason != null) fight.Result = ExitResult(fight);
                 return;
             }
             string enemyId = hit.Victim == 0 ? hit.Target : hit.Enemy;
@@ -322,13 +330,13 @@ namespace CombatStats.Stats
                 if (!enemies.TryGetValue(enemyId, out Enemy enemy) || enemy.Fight != fight.Id)
                 {
                     enemies[enemyId] = enemy = new Enemy { Fight = fight.Id };
-                    if (!fight.Active && contact) { fight.Result = "Active"; fight.End = 0d; }
-                    pendingKills.Remove(fight.Id);
+                    if (!fight.Active && contact) { fight.Result = "Active"; fight.End = 0d; fight.ExitReason = null; }
                 }
-                if (hit.Time >= enemy.Seen)
+                if (!enemy.Dead && (hit.Time >= enemy.Seen || hit.Kind == ObservationKind.Death))
                 {
                     enemy.Seen = hit.Time;
                     if (hit.Kind == ObservationKind.Engagement) enemy.Engaged = hit.Engaged;
+                    enemy.Departed = hit.Kind == ObservationKind.Engagement && !hit.Engaged;
                     if (hit.Kind == ObservationKind.Death) { enemy.Dead = true; enemy.Engaged = false; }
                 }
             }
@@ -337,8 +345,8 @@ namespace CombatStats.Stats
                 fight.Start = Math.Min(fight.Start, hit.Time);
                 fight.LastActivity = Math.Max(fight.LastActivity, hit.Time);
                 fight.X = hit.X; fight.Y = hit.Y; fight.Z = hit.Z;
-                if (hit.Actor != 0) fight.Participants[hit.Actor] = hit.ActorName;
-                if (hit.Victim != 0) fight.Participants[hit.Victim] = hit.TargetName;
+                Join(fight, hit.Actor, hit.ActorName, hit.Time);
+                Join(fight, hit.Victim, hit.TargetName, hit.Time);
             }
             if (hit.Kind == ObservationKind.Damage)
             {
@@ -353,7 +361,7 @@ namespace CombatStats.Stats
                     {
                         hit.Pet = "";
                         hit.Overkill = groupAmount > 0f ? fullOverkill * credit.Value.Amounts.Sum() / groupAmount : 0f;
-                        fight.Participants[credit.Key] = credit.Value.Name;
+                        Join(fight, credit.Key, credit.Value.Name, hit.Time);
                         Combatant row = Encounter.Row(fight.Damage, credit.Key, credit.Value.Name);
                         row.Add(hit, credit.Value.Amounts);
                         foreach (var pet in credit.Value.Pets) Combatant.AddTo(row.Pets, pet.Key, pet.Value);
@@ -363,7 +371,6 @@ namespace CombatStats.Stats
             if (hit.Kind == ObservationKind.Death && hit.Victim == 0)
             {
                 dots.ClearTarget(hit.Target);
-                if (enemies.Values.Where(x => x.Fight == fight.Id).All(x => x.Dead)) pendingKills[fight.Id] = hit.Time;
             }
         }
 
@@ -375,10 +382,46 @@ namespace CombatStats.Stats
         private void RecordEnvironment(Observation hit)
         {
             if (hit.Victim == 0) return;
-            Encounter fight = Fights.FirstOrDefault(x => x.Active && x.Participants.ContainsKey(hit.Victim));
+            Encounter fight = ParticipantFight(hit);
             if (fight == null) return;
             fight.Revision++;
             AddTaken(fight, hit);
+        }
+
+        private Encounter ParticipantFight(Observation hit) => Fights
+            .Where(fight => fight.Joined.TryGetValue(hit.Victim, out double joined) && joined <= hit.Time &&
+                (fight.Active || hit.Time <= fight.ClosedAt))
+            .OrderByDescending(fight => fight.Joined[hit.Victim]).ThenByDescending(fight => fight.Id).FirstOrDefault();
+
+        private static void Join(Encounter fight, long player, string name, double time)
+        {
+            if (player == 0) return;
+            fight.Participants[player] = name;
+            if (!fight.Joined.TryGetValue(player, out double first) || time < first) fight.Joined[player] = time;
+        }
+
+        private static void KeepLatest(Dictionary<long, double> times, long player, double time)
+        {
+            if (!times.TryGetValue(player, out double previous) || time > previous) times[player] = time;
+        }
+
+        private void Respawn(long player, double time)
+        {
+            foreach (Encounter fight in Fights.Where(x => x.Joined.TryGetValue(player, out double joined) && time >= joined && (x.Active || time <= x.ClosedAt)))
+            {
+                KeepLatest(fight.LastSpawn, player, time);
+                if (fight.Active || fight.ExitReason == null) continue;
+                string result = ExitResult(fight);
+                if (result != fight.Result) { fight.Result = result; fight.Revision++; }
+            }
+        }
+
+        private static string ExitResult(Encounter fight)
+        {
+            var players = fight.Participants.Keys.Where(id => !Combatant.IsUnownedPet(id));
+            return players.Any() && players.All(id => fight.LastDeath.TryGetValue(id, out double death) &&
+                (!fight.LastSpawn.TryGetValue(id, out double spawn) || spawn > fight.ClosedAt || death >= spawn))
+                ? "Wipe" : fight.ExitReason;
         }
 
         // The damage-taken breakdown lists sources, so the row's target is the attacker or cause.
@@ -394,19 +437,24 @@ namespace CombatStats.Stats
         {
             foreach (Encounter fight in Fights.Where(x => x.Active).ToList())
             {
-                var alive = enemies.Values.Where(x => x.Fight == fight.Id && !x.Dead).ToList();
+                var members = enemies.Values.Where(x => x.Fight == fight.Id).ToList();
+                var alive = members.Where(x => !x.Dead && !x.Departed).ToList();
                 // Other targets of an area attack can be reported by another owner in the next batch.
                 // Confirm the kill briefly, but end the clock at the actual final death.
-                if (alive.Count == 0 && pendingKills.TryGetValue(fight.Id, out double death))
+                if (alive.Count == 0 && members.Any(x => x.Dead))
                 {
-                    if (now - death >= 1d) { Finish(fight, death, "Killed"); pendingKills.Remove(fight.Id); }
-                    continue;
+                    double death = members.Where(x => x.Dead).Max(x => x.Seen);
+                    if (members.All(x => x.Dead || x.Seen <= death))
+                    {
+                        if (now - death >= 1d) { fight.ClosedAt = death; Finish(fight, death, "Killed"); }
+                        continue;
+                    }
                 }
                 if (alive.Any(x => x.Engaged && now - x.Seen <= EngagementFreshness)) continue;
                 if (now - fight.LastActivity < Grace) continue;
-                string result = alive.Any(x => x.Engaged) ? "Interrupted" : "Disengaged";
-                if (fight.Participants.Count > 0 && fight.Participants.Keys.All(x => fight.Deaths.ContainsKey(x))) result = "Wipe";
-                Finish(fight, fight.LastActivity, result);
+                fight.ClosedAt = fight.LastActivity + Grace;
+                fight.ExitReason = alive.Any(x => x.Engaged) ? "Interrupted" : "Disengaged";
+                Finish(fight, fight.LastActivity, ExitResult(fight));
             }
             foreach (Encounter old in Fights.Where(x => !x.Active).OrderByDescending(x => x.End)
                          .Skip(CorrectionHistory).Where(x => now - x.End > LateReportSeconds).ToList())
@@ -431,15 +479,15 @@ namespace CombatStats.Stats
             into.Start = Math.Min(into.Start, other.Start);
             into.LastActivity = Math.Max(into.LastActivity, other.LastActivity);
             if (other.Boss) { into.Boss = true; into.Name = other.Name; }
-            foreach (var entry in other.Participants) into.Participants[entry.Key] = entry.Value;
+            foreach (var entry in other.Participants) Join(into, entry.Key, entry.Value, other.Joined[entry.Key]);
+            foreach (var entry in other.LastDeath) KeepLatest(into.LastDeath, entry.Key, entry.Value);
+            foreach (var entry in other.LastSpawn) KeepLatest(into.LastSpawn, entry.Key, entry.Value);
             foreach (CombatChannel channel in CombatChannels.All) CombineRows(into.Rows(channel), other.Rows(channel));
             foreach (var entry in other.Deaths)
             { into.Deaths.TryGetValue(entry.Key, out int count); into.Deaths[entry.Key] = count + entry.Value; }
             foreach (Enemy enemy in enemies.Values.Where(x => x.Fight == other.Id)) enemy.Fight = into.Id;
             foreach (long id in Redirects.Where(x => x.Value == other.Id).Select(x => x.Key).ToList()) Redirects[id] = into.Id;
             Redirects[other.Id] = into.Id;
-            pendingKills.Remove(other.Id);
-            pendingKills.Remove(into.Id);
             Fights.Remove(other);
         }
 
