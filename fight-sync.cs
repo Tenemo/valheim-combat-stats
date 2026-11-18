@@ -26,6 +26,8 @@ namespace CombatStats.Net
         public string Name = "", Character = "";
         public float X, Y, Z;
         public double Sent;
+        // Until its clock is set the player's game drops feeds, so the server sends the standing feed again.
+        public bool Synchronized;
     }
 
     /// <summary>What every client learns about the connected players: enough to credit pets and remote attackers.</summary>
@@ -150,7 +152,7 @@ namespace CombatStats.Net
                     nextHello = Clock.Elapsed.TotalSeconds + (synchronized ? 2d : 0.25d);
                     Vector3 position = local.transform.position;
                     var identity = new PlayerIdentity { Id = local.GetPlayerID(), Name = local.GetPlayerName(),
-                        Character = DamageCollector.Key(local), Sent = Clock.Elapsed.TotalSeconds,
+                        Character = DamageCollector.Key(local), Sent = Clock.Elapsed.TotalSeconds, Synchronized = synchronized,
                         X = position.x, Y = position.y, Z = position.z };
                     if (net.IsServer()) players[ZNet.GetUID()] = identity;
                     else net.GetServerPeer()?.m_rpc.Invoke(HelloRpc, Encode(identity));
@@ -223,6 +225,7 @@ namespace CombatStats.Net
             var data = ZDOMan.instance.GetZDO(peer.m_characterID);
             if (data == null || data.GetLong(ZDOVars.s_playerID) != identity.Id) return;
             players[peer.m_uid] = identity;
+            if (!identity.Synchronized) quiet.Remove(peer.m_uid);
             peer.m_rpc.Invoke(ClockRpc, Encode(new ClockReply { Session = session, Echo = identity.Sent, Time = Now }));
         }
 
