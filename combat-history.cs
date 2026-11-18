@@ -78,7 +78,7 @@ namespace CombatStats.Stats
             if (FilePath.Length > 0) Storage.WriteLater(FilePath, JsonConvert.SerializeObject(Saved), failed);
         }
 
-        // A hand-edited or truncated file can name a list but leave it null.
+        // A hand-edited or truncated file can name a list, a fight's rows or a row's amounts and leave them null or short.
         private static SavedHistory Repair(SavedHistory saved)
         {
             saved.Recent = saved.Recent?.Where(x => x != null).ToList() ?? new List<Encounter>();
@@ -86,7 +86,36 @@ namespace CombatStats.Stats
             saved.Session = saved.Session ?? "";
             saved.Sessions = saved.Sessions ?? new List<string>();
             saved.Accounted = saved.Accounted ?? new List<string>();
+            foreach (Encounter fight in saved.Recent) Repair(fight);
+            Repair(saved.Overall);
             return saved;
+        }
+
+        private static void Repair(Encounter fight)
+        {
+            fight.Session = fight.Session ?? "";
+            fight.Name = fight.Name ?? "Combat";
+            fight.Result = fight.Result ?? "";
+            fight.Participants = fight.Participants ?? new Dictionary<long, string>();
+            fight.Deaths = fight.Deaths ?? new Dictionary<long, int>();
+            fight.Damage = Repair(fight.Damage);
+            fight.Taken = Repair(fight.Taken);
+            fight.Healing = Repair(fight.Healing);
+        }
+
+        private static Dictionary<long, Combatant> Repair(Dictionary<long, Combatant> rows)
+        {
+            rows = rows ?? new Dictionary<long, Combatant>();
+            foreach (long id in rows.Where(x => x.Value == null).Select(x => x.Key).ToList()) rows.Remove(id);
+            foreach (Combatant row in rows.Values)
+            {
+                row.Name = row.Name ?? "";
+                if (row.ByKind == null || row.ByKind.Length != DamageKinds.Count) Array.Resize(ref row.ByKind, DamageKinds.Count);
+                row.Targets = row.Targets ?? new Dictionary<string, float>();
+                row.Skills = row.Skills ?? new Dictionary<string, float>();
+                row.Pets = row.Pets ?? new Dictionary<string, float>();
+            }
+            return rows;
         }
 
         public void Receive(string session, double now, List<Encounter> fights, Dictionary<long, long> redirects)
