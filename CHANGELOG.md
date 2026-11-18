@@ -1,3 +1,11 @@
+# 1.0.11
+
+- The compact meter shows by default: the running fight, then the latest one. A choice made with F10 or in the settings panel still applies. The settings file is written on first launch, with the keys and colours to change.
+- A poison's last tick counts towards its damage.
+- A fight ends as a kill when its last enemy dies, a retreat or a death stays with its fight, and a blow that Undying prevents counts as healing instead of damage.
+- A pet's damage goes to its current handler.
+- After rejoining, earlier fights arrive a few at a time instead of in one message that could be too large to arrive at all, and the History tab reads "Fight 1 of 1" instead of "Fight 0 of 1" after Earlier in an empty history.
+
 # 1.0.10
 
 - Dying no longer loses the fight that is running, and a fight that ends in a wipe while you wait to respawn now shows as a wipe.

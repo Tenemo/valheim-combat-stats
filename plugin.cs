@@ -18,7 +18,7 @@ namespace CombatStats
     public sealed class Plugin : BaseUnityPlugin
     {
         public const string Id = "tenemo.CombatStats";
-        public const string Version = "1.0.10";
+        public const string Version = "1.0.11";
         internal static ManualLogSource Log;
         internal static ModConfig Settings;
         internal static DamageCollector Collector;
